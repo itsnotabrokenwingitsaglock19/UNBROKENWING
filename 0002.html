@@ -115,29 +115,43 @@
   const minText = minG.querySelector('text');
   minText.style.transition = 'fill ' + CROSS_FADE + 's linear, stroke ' + CROSS_FADE + 's linear';
 
-  // Clockwise angle from 12 o'clock of a point on the ring
-  const angleOf = (x, y) => (Math.atan2(x - CX, -(y - CY)) * 180 / Math.PI + 360) % 360;
+  // Where text sits on the ring, worked out from letter widths and the ring's size.
+  // Browsers disagree when asked for letter positions on a curved path (Safari's engine,
+  // used by every iPhone browser, answers differently), so the clock calculates them.
+  // Each half of the ring is an arc of radius 170 around the centre; the text is centred
+  // on it and stretched to TEXT_LEN by widening the gaps between letters.
+  const RADIUS = 170, TEXT_LEN = 515, ARC_LEN = Math.PI * RADIUS;
+  const ruler = document.createElement('canvas').getContext('2d');
+  // Clock angle (degrees, 0 = 12 o'clock, clockwise) of the start and end of each character
+  function charAngles(text, half) {
+    ruler.font = '700 ' + FONT_SIZE + 'px ' + FONT;
+    const n = text.length, x = [];
+    for (let i = 0; i <= n; i++) x.push(ruler.measureText(text.slice(0, i)).width);
+    const gap = (TEXT_LEN - x[n]) / (n - 1);
+    const first = ARC_LEN / 2 - TEXT_LEN / 2;
+    const from = half === 'top' ? -90 : 90; // top half runs 9 -> 12 -> 3, bottom half 3 -> 6 -> 9
+    const deg = d => from + d / RADIUS * 180 / Math.PI;
+    return [...text].map((c, i) => ({ start: deg(first + x[i] + i * gap), end: deg(first + x[i + 1] + i * gap) }));
+  }
+
+  // Where each word sits on the ring at rest, so it can be aimed at the right time
+  function restAngle(firstChar, lastChar) {
+    const a = charAngles(SENTENCE, 'top');
+    return (a[firstChar].start + a[lastChar].end) / 2;
+  }
 
   // Seconds: one lit letter travels around the ring each minute.
   // Each letter lights when a seconds hand would reach it, so :00 is at 12 o'clock.
   const allLetters = [...secsG.querySelectorAll('tspan[data-ch]')];
   let letters = allLetters, starts = [], ends = [];
   function measureLetters() {
-    const texts = [...disc.querySelectorAll('text')];
     const placed = [];
     let k = 0;
-    try {
-      for (const t of texts) {
-        const s = t.textContent;
-        for (let i = 0; i < s.length; i++) {
-          if (s[i] === ' ') continue;
-          const a = t.getStartPositionOfChar(i), b = t.getEndPositionOfChar(i);
-          placed.push({ el: allLetters[k++], deg: angleOf((a.x + b.x) / 2, (a.y + b.y) / 2) });
-        }
-      }
-    } catch (e) {
-      placed.length = 0;
-      allLetters.forEach((el, i) => placed.push({ el, deg: i * 360 / allLetters.length }));
+    for (const half of ['top', 'bottom']) {
+      charAngles(SENTENCE, half).forEach((a, i) => {
+        if (SENTENCE[i] === ' ') return;
+        placed.push({ el: allLetters[k++], deg: (((a.start + a.end) / 2) % 360 + 360) % 360 });
+      });
     }
     placed.sort((p, q) => p.deg - q.deg);
     letters = placed.map(p => p.el);
@@ -155,20 +169,11 @@
     return v;
   }
 
-  // Where each word sits on the ring at rest, so it can be aimed at the right time
-  function restAngle(textEl, firstChar, lastChar) {
-    try {
-      const a = textEl.getStartPositionOfChar(firstChar);
-      const b = textEl.getEndPositionOfChar(lastChar);
-      const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
-      return Math.atan2(x - CX, -(y - CY)) * 180 / Math.PI;
-    } catch (e) { return 0; }
-  }
 
   let homeHour = 0, homeMin = 0;
   function measure() {
-    homeHour = restAngle(hourG.querySelector('text'), 10, 20); // "broken wing"
-    homeMin  = restAngle(minText, 28, 35);                     // "glock 19"
+    homeHour = restAngle(10, 20); // "broken wing"
+    homeMin  = restAngle(28, 35); // "glock 19"
     measureLetters();
   }
 
