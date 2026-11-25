@@ -79,10 +79,6 @@
   hourG.setAttribute('opacity', HOUR_OPACITY);
   minG.setAttribute('opacity', MIN_OPACITY);
 
-  for (const g of [hourG, minG]) {
-    g.style.transformBox = 'view-box';
-    g.style.transformOrigin = CX + 'px ' + CY + 'px';
-  }
 
   // Seconds: one lit letter travels through all 56 characters each minute
   const letters = [...disc.querySelectorAll('tspan[data-ch]')];
@@ -139,7 +135,72 @@
     return cur + d;
   }
 
-  let curH = null, curM = null, ready = false;
+  // Turning the hands. SVG's own rotate(angle, centre) is used because every browser
+  // handles it the same way. The click-and-settle movement is the same curve as before,
+  // cubic-bezier(.3,1.4,.5,1), worked out here instead of left to the browser.
+  function curve(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const X = t => ((ax * t + bx) * t + cx) * t, Y = t => ((ay * t + by) * t + cy) * t;
+    return x => {
+      let lo = 0, hi = 1, t = x;
+      for (let i = 0; i < 30; i++) { if (X(t) < x) lo = t; else hi = t; t = (lo + hi) / 2; }
+      return Y(t);
+    };
+  }
+  const settle = curve(.3, 1.4, .5, 1);
+  function mover(g, seconds) {
+    let from = null, to = null, start = 0, shown = '';
+    const at = t => {
+      const u = (t - start) / (seconds * 1000);
+      return u >= 1 ? to : from + (to - from) * settle(Math.max(0, u));
+    };
+    return function (target, t) {
+      if (to === null) { from = to = target; start = t - seconds * 1000; } // first frame: no movement
+      else if (target !== to) { from = at(t); to = target; start = t; }
+      const a = at(t), str = 'rotate(' + a.toFixed(2) + ' ' + CX + ' ' + CY + ')';
+      if (str !== shown) { g.setAttribute('transform', str); shown = str; }
+      return a;
+    };
+  }
+  const moveHour = mover(hourG, 0.8), moveMin = mover(minG, 0.35);
+
+  // Check page: add ?check=1 to the address to see what the clock is doing. Viewers never see it.
+  const svgRoot = document.getElementById('clock');
+  const checkBox = /[?&]check=1(&|$)/.test(location.search) ? document.createElement('pre') : null;
+  if (checkBox) {
+    checkBox.style.cssText = 'position:fixed;left:8px;top:8px;margin:0;padding:6px 8px;' +
+      'background:#fff;color:#000;font:12px/1.5 monospace;z-index:9;white-space:pre';
+    document.body.appendChild(checkBox);
+  }
+  const two = n => String(n).padStart(2, '0');
+  const norm = d => ((d % 360) + 360) % 360;
+  const hourText = d => { const mins = Math.round(norm(d) * 2) % 720; return (Math.floor(mins / 60) || 12) + ':' + two(mins % 60); };
+  const minText2 = d => two(Math.round(norm(d) / 6) % 60) + ' min';
+  function browserSees(textEl, first, last) {
+    try {
+      const a = textEl.getStartPositionOfChar(first), b = textEl.getEndPositionOfChar(last);
+      const M = svgRoot.getScreenCTM().inverse().multiply(textEl.getScreenCTM());
+      const p = svgRoot.createSVGPoint(); p.x = (a.x + b.x) / 2; p.y = (a.y + b.y) / 2;
+      const q = p.matrixTransform(M);
+      return Math.atan2(q.x - CX, -(q.y - CY)) * 180 / Math.PI;
+    } catch (e) { return null; }
+  }
+  let lastCheck = 0;
+  function check(now, hourDeg, minDeg, hourAt, minAt) {
+    if (!checkBox || performance.now() - lastCheck < 500) return;
+    lastCheck = performance.now();
+    let zone = '';
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+    const bh = browserSees(hourG.querySelector('text'), 10, 20), bm = browserSees(minG.querySelector('text'), 28, 35);
+    checkBox.textContent =
+      'Phone time   ' + two(now.getHours()) + ':' + two(now.getMinutes()) + ':' + two(now.getSeconds()) + '  ' + zone + '\n' +
+      'Should show  hour ' + hourText(hourDeg) + '   minute ' + minText2(minDeg) + '\n' +
+      'Placed at    hour ' + hourText(homeHour + hourAt) + '   minute ' + minText2(homeMin + minAt) + '\n' +
+      'Browser sees hour ' + (bh === null ? 'cannot tell' : hourText(bh)) + '   minute ' + (bm === null ? 'cannot tell' : minText2(bm));
+  }
+
+  let curH = null, curM = null;
 
   function tick() {
     const now = new Date();
@@ -151,16 +212,9 @@
 
     curH = approach(curH, h * 30 - homeHour); // clicks on the hour
     curM = approach(curM, m * 6 - homeMin);   // clicks each minute
-    hourG.style.transform = 'rotate(' + curH + 'deg)';
-    minG.style.transform  = 'rotate(' + curM + 'deg)';
-
-    if (!ready) {
-      ready = true;
-      requestAnimationFrame(() => {
-        hourG.style.transition = 'transform 0.8s cubic-bezier(.3,1.4,.5,1)';
-        minG.style.transition  = 'transform 0.35s cubic-bezier(.3,1.4,.5,1)';
-      });
-    }
+    const t = performance.now();
+    const hourAt = moveHour(curH, t), minAt = moveMin(curM, t);
+    check(now, h * 30, m * 6, hourAt, minAt);
     requestAnimationFrame(tick);
   }
 
